@@ -31,19 +31,37 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 /**
  * Jeton Azure éphémère (~10 min). Le client l'utilise avec
  * SpeechTranslationConfig.fromAuthorizationToken(token, region).
+ * Si la région configurée échoue, la bonne région est détectée
+ * automatiquement puis mémorisée.
  */
+let ACTIVE_REGION = AZURE_REGION;
+
+async function issueToken(region) {
+  const r = await fetch(
+    `https://${region}.api.cognitive.microsoft.com/sts/v1.0/issueToken`,
+    { method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': AZURE_KEY }, signal: AbortSignal.timeout(8000) }
+  );
+  if (!r.ok) throw new Error(`Azure ${r.status}`);
+  return r.text();
+}
+
 app.get('/api/token', async (_req, res) => {
   if (!AZURE_KEY) return res.status(500).json({ error: 'AZURE_SPEECH_KEY non configurée' });
   try {
-    const r = await fetch(
-      `https://${AZURE_REGION}.api.cognitive.microsoft.com/sts/v1.0/issueToken`,
-      { method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': AZURE_KEY } }
-    );
-    if (!r.ok) throw new Error(`Azure ${r.status}`);
-    const token = await r.text();
-    res.json({ token, region: AZURE_REGION });
+    const token = await issueToken(ACTIVE_REGION);
+    return res.json({ token, region: ACTIVE_REGION });
   } catch (e) {
-    console.error('token error:', e.message);
+    // Région configurée invalide : détection automatique (en parallèle)
+    const attempts = await Promise.allSettled(
+      CANDIDATE_REGIONS.map(async (r) => ({ r, token: await issueToken(r) }))
+    );
+    const hit = attempts.find((a) => a.status === 'fulfilled');
+    if (hit) {
+      ACTIVE_REGION = hit.value.r;
+      console.log('Région Azure détectée automatiquement :', ACTIVE_REGION);
+      return res.json({ token: hit.value.token, region: ACTIVE_REGION });
+    }
+    console.error('token error:', e.message, '(aucune région valide)');
     res.status(502).json({ error: 'Impossible d’obtenir un jeton Azure' });
   }
 });
