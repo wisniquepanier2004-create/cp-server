@@ -48,6 +48,38 @@ app.get('/api/token', async (_req, res) => {
   }
 });
 
+/**
+ * Diagnostic : teste la clé contre les régions Azure courantes.
+ * La clé ne quitte jamais le serveur — seule la liste des régions
+ * qui répondent OK est renvoyée.
+ */
+const CANDIDATE_REGIONS = [
+  'canadacentral','canadaeast','eastus','eastus2','westus','westus2','westus3',
+  'centralus','southcentralus','northcentralus','westcentralus',
+  'westeurope','northeurope','francecentral','uksouth','germanywestcentral',
+  'swedencentral','switzerlandnorth','japaneast','japanwest','koreacentral',
+  'southeastasia','eastasia','australiaeast','brazilsouth','centralindia','uaenorth','southafricanorth'
+];
+app.get('/api/diagnose', async (_req, res) => {
+  if (!AZURE_KEY) return res.status(500).json({ error: 'AZURE_SPEECH_KEY non configurée' });
+  const working = [];
+  await Promise.all(CANDIDATE_REGIONS.map(async (r) => {
+    try {
+      const resp = await fetch(
+        `https://${r}.api.cognitive.microsoft.com/sts/v1.0/issueToken`,
+        { method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': AZURE_KEY }, signal: AbortSignal.timeout(8000) }
+      );
+      if (resp.ok) working.push(r);
+    } catch (_) { /* région injoignable ou refus */ }
+  }));
+  res.json({
+    configuredRegion: AZURE_REGION,
+    workingRegions: working,
+    keyLength: AZURE_KEY.length,
+    keyHasWhitespace: AZURE_KEY !== AZURE_KEY.trim(),
+  });
+});
+
 // ── Salles WebSocket ────────────────────────────────────────────
 // rooms: code -> Map<ws, {name, lang}>
 const rooms = new Map();
