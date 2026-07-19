@@ -14,13 +14,24 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 8080;
 const AZURE_KEY = process.env.AZURE_SPEECH_KEY || '';
 const AZURE_REGION = process.env.AZURE_SPEECH_REGION || 'eastus';
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*'; // ex: "https://credia.ca"
+// Origines autorisées : domaines Equivox + GitHub Pages, extensibles via env (liste séparée par virgules)
+const DEFAULT_ORIGINS = [
+  'https://equivox.app',
+  'https://www.equivox.app',
+  'https://christopherpierre-dev.github.io',
+];
+const envOrigins = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_ORIGINS = [...new Set([...DEFAULT_ORIGINS, ...envOrigins])];
 
 const app = express();
 
-// CORS minimal
+// CORS minimal (multi-origines)
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  const origin = req.headers.origin;
+  if (origin && (ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*'))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
