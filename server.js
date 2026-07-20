@@ -19,6 +19,8 @@ const DEFAULT_ORIGINS = [
   'https://equivox.app',
   'https://www.equivox.app',
   'https://christopherpierre-dev.github.io',
+  'https://raw.githack.com', // miroir HTTPS pour tests pendant l'émission du certificat
+  'http://localhost:8080',   // tests locaux
 ];
 const envOrigins = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
 const ALLOWED_ORIGINS = [...new Set([...DEFAULT_ORIGINS, ...envOrigins])];
