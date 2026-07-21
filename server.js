@@ -115,7 +115,9 @@ app.get('/api/diagnose', async (_req, res) => {
 // rooms: code -> Map<ws, {name, lang}>
 const rooms = new Map();
 const ROOM_TTL_MS = 30 * 60 * 1000; // salle vide supprimée après 30 min
-const MAX_PARTICIPANTS = 8;
+// Le serveur ne relaie que du texte traduit (pas d'audio) : le coût par
+// participant est minime. Ajustable sans redéploiement via MAX_PARTICIPANTS.
+const MAX_PARTICIPANTS = Number(process.env.MAX_PARTICIPANTS) || 50;
 
 function newRoomCode() {
   let code;
