@@ -185,6 +185,31 @@ wss.on('connection', (ws) => {
         }, ws);
         break;
       }
+      case 'partial_utterance': { // aperçu en cours de phrase (texte provisoire)
+        if (!ws.meta.room) return;
+        broadcast(ws.meta.room, {
+          type: 'partial_utterance',
+          from: ws.meta.name,
+          srcLang: m.srcLang,
+          original: String(m.original || '').slice(0, 2000),
+          translations: m.translations || {},
+        }, ws);
+        break;
+      }
+      case 'audio_chunk': { // voix originale (morceaux MediaRecorder base64, ~200 ms)
+        if (!ws.meta.room) return;
+        const data = String(m.data || '');
+        if (!data || data.length > 131072) return; // garde-fou : 128 Ko max par morceau
+        broadcast(ws.meta.room, {
+          type: 'audio_chunk',
+          from: ws.meta.name,
+          data,
+          mimeType: String(m.mimeType || 'audio/webm'),
+          isFirst: !!m.isFirst,
+          seq: m.seq | 0,
+        }, ws);
+        break;
+      }
     }
   });
 
