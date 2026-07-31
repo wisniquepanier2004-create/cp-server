@@ -34,12 +34,51 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
+app.use(express.json({ limit: '32kb' }));
+
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+/**
+ * Traduction de texte (clavardage). Le client envoie une phrase et la liste
+ * des langues présentes dans la salle ; le serveur interroge Azure Translator
+ * avec sa clé — la clé ne quitte jamais le serveur.
+ */
+app.post('/api/translate', async (req, res) => {
+  if (!AZURE_KEY) return res.status(500).json({ error: 'AZURE_SPEECH_KEY non configurée' });
+  const text = String(req.body?.text || '').slice(0, 2000);
+  const from = String(req.body?.from || '').slice(0, 12);
+  const to = Array.isArray(req.body?.to) ? req.body.to.slice(0, 12).map(s => String(s).slice(0, 12)) : [];
+  if (!text || !to.length) return res.json({ translations: {} });
+
+  try {
+    const qs = new URLSearchParams({ 'api-version': '3.0' });
+    if (from) qs.append('from', from);
+    to.forEach(t => qs.append('to', t));
+    const r = await fetch(`https://api.cognitive.microsofttranslator.com/translate?${qs}`, {
+      method: 'POST',
+      headers: {
+        'Ocp-Apim-Subscription-Key': AZURE_KEY,
+        'Ocp-Apim-Subscription-Region': ACTIVE_REGION,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([{ Text: text }]),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return res.json({ translations: {} });
+    const j = await r.json();
+    const out = {};
+    (j?.[0]?.translations || []).forEach(t => { if (t.to) out[t.to] = t.text; });
+    return res.json({ translations: out });
+  } catch (e) {
+    return res.json({ translations: {} });
+  }
+});
 
 /**
  * Jeton Azure éphémère (~10 min). Le client l'utilise avec
@@ -138,7 +177,29 @@ function broadcast(code, payload, except = null) {
 
 function roster(code) {
   const room = rooms.get(code);
-  return room ? [...room.values()].map(p => ({ name: p.name, lang: p.lang })) : [];
+  return room ? [...room.values()].map(p => ({
+    id: p.id, name: p.name, lang: p.lang, hand: !!p.hand, muted: !!p.muted, video: !!p.video,
+  })) : [];
+}
+
+// Envoi ciblé à un seul participant (signalisation WebRTC pair à pair)
+function sendTo(code, peerId, payload) {
+  const room = rooms.get(code);
+  if (!room) return;
+  for (const [ws, p] of room.entries()) {
+    if (p.id === peerId && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify(payload));
+      return;
+    }
+  }
+}
+
+function updateMeta(ws, patch) {
+  const room = rooms.get(ws.meta.room);
+  if (!room) return;
+  const cur = room.get(ws) || {};
+  room.set(ws, { ...cur, ...patch });
+  broadcast(ws.meta.room, { type: 'roster', participants: roster(ws.meta.room) });
 }
 
 const server = http.createServer(app);
@@ -210,6 +271,45 @@ wss.on('connection', (ws) => {
         }, ws);
         break;
       }
+
+      // ── Clavardage : message texte + ses traductions ──
+      case 'chat': {
+        if (!ws.meta.room) return;
+        broadcast(ws.meta.room, {
+          type: 'chat',
+          from: ws.meta.name,
+          fromId: ws.meta.id,
+          srcLang: m.srcLang,
+          text: String(m.text || '').slice(0, 2000),
+          translations: m.translations || {},
+          at: Date.now(),
+        });
+        break;
+      }
+
+      // ── État du participant : main levée, micro, caméra ──
+      case 'state': {
+        if (!ws.meta.room) return;
+        const patch = {};
+        if ('hand' in m) patch.hand = !!m.hand;
+        if ('muted' in m) patch.muted = !!m.muted;
+        if ('video' in m) patch.video = !!m.video;
+        updateMeta(ws, patch);
+        break;
+      }
+
+      // ── Signalisation WebRTC : relais ciblé, le média ne passe PAS ici ──
+      case 'signal': {
+        if (!ws.meta.room || !m.to) return;
+        sendTo(ws.meta.room, String(m.to), {
+          type: 'signal',
+          from: ws.meta.id,
+          fromName: ws.meta.name,
+          kind: String(m.kind || ''),        // offer | answer | ice | bye
+          payload: m.payload || null,
+        });
+        break;
+      }
     }
   });
 
@@ -217,9 +317,10 @@ wss.on('connection', (ws) => {
 });
 
 function joinRoom(ws, code, name, lang) {
-  ws.meta = { room: code, name: String(name || 'Invité').slice(0, 40), lang: String(lang || 'en') };
-  rooms.get(code).set(ws, { name: ws.meta.name, lang: ws.meta.lang });
-  ws.send(JSON.stringify({ type: 'joined', room: code, participants: roster(code) }));
+  const id = crypto.randomBytes(8).toString('hex'); // identifiant de pair (WebRTC)
+  ws.meta = { room: code, id, name: String(name || 'Invité').slice(0, 40), lang: String(lang || 'en') };
+  rooms.get(code).set(ws, { id, name: ws.meta.name, lang: ws.meta.lang, hand: false, muted: false, video: false });
+  ws.send(JSON.stringify({ type: 'joined', room: code, selfId: id, participants: roster(code) }));
   broadcast(code, { type: 'roster', participants: roster(code) }, ws);
 }
 
