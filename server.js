@@ -14,25 +14,45 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 8080;
 const AZURE_KEY = process.env.AZURE_SPEECH_KEY || '';
 const AZURE_REGION = process.env.AZURE_SPEECH_REGION || 'eastus';
-// Origines autorisées : domaines Equivox + GitHub Pages, extensibles via env (liste séparée par virgules)
+// Origines autorisées : domaines de l'application + GitHub Pages, extensibles via env
+// (liste séparée par virgules). Un changement de nom de domaine ne doit plus couper
+// l'application : les domaines connus sont inscrits ici, en plus de la variable
+// d'environnement, et un motif générique couvre les prévisualisations de déploiement.
 const DEFAULT_ORIGINS = [
-  'https://equivox.app',
+  'https://loquivox.app',
+  'https://www.loquivox.app',
+  'https://equivox.app',       // ancien domaine — conservé le temps de la transition
   'https://www.equivox.app',
   'https://christopherpierre-dev.github.io',
-  'https://raw.githack.com', // miroir HTTPS pour tests pendant l'émission du certificat
-  'http://localhost:8080',   // tests locaux
+  'https://raw.githack.com',   // miroir HTTPS pour tests
+  'http://localhost:8080',     // tests locaux
+  'http://127.0.0.1:8080',
+];
+// Motifs acceptés en plus de la liste exacte (prévisualisations Vercel / GitHub Pages)
+const ORIGIN_PATTERNS = [
+  /^https:\/\/[a-z0-9-]+\.vercel\.app$/i,
+  /^https:\/\/[a-z0-9-]+\.github\.io$/i,
 ];
 const envOrigins = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
 const ALLOWED_ORIGINS = [...new Set([...DEFAULT_ORIGINS, ...envOrigins])];
+
+function originAllowed(origin) {
+  if (!origin) return false;
+  if (ALLOWED_ORIGINS.includes('*')) return true;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  return ORIGIN_PATTERNS.some(re => re.test(origin));
+}
 
 const app = express();
 
 // CORS minimal (multi-origines)
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*'))) {
+  if (originAllowed(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
+  } else if (origin) {
+    console.warn('[CORS] origine refusée :', origin);
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -43,6 +63,19 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '32kb' }));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+/**
+ * Version du serveur — permet de vérifier d'un coup d'œil qu'un déploiement
+ * a bien pris, et quelles origines sont acceptées.
+ */
+const BUILD = '2026-08-03-cors-loquivox+webrtc';
+app.get('/api/version', (req, res) => res.json({
+  build: BUILD,
+  originsAllowed: ALLOWED_ORIGINS,
+  yourOrigin: req.headers.origin || null,
+  yourOriginAllowed: originAllowed(req.headers.origin),
+  features: ['chat', 'state', 'signal', 'translate'],
+}));
 
 /**
  * Traduction de texte (clavardage). Le client envoie une phrase et la liste
