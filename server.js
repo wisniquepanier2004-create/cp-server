@@ -68,7 +68,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
  * Version du serveur — permet de vérifier d'un coup d'œil qu'un déploiement
  * a bien pris, et quelles origines sont acceptées.
  */
-const BUILD = '2026-08-03-cors-loquivox+webrtc';
+const BUILD = '2026-08-03b-translate-diag';
 app.get('/api/version', (req, res) => res.json({
   build: BUILD,
   originsAllowed: ALLOWED_ORIGINS,
@@ -83,7 +83,13 @@ app.get('/api/version', (req, res) => res.json({
  * avec sa clé — la clé ne quitte jamais le serveur.
  */
 app.post('/api/translate', async (req, res) => {
-  if (!AZURE_KEY) return res.status(500).json({ error: 'AZURE_SPEECH_KEY non configurée' });
+  // La traduction de texte utilise l'API Translator, qui est un service distinct
+  // de Speech. Une clé Speech seule ne l'ouvre pas : il faut soit une ressource
+  // Translator dédiée (AZURE_TRANSLATOR_KEY), soit une ressource multi-service
+  // Cognitive Services — auquel cas la clé Speech convient.
+  const TKEY = process.env.AZURE_TRANSLATOR_KEY || AZURE_KEY;
+  const TREGION = process.env.AZURE_TRANSLATOR_REGION || ACTIVE_REGION;
+  if (!TKEY) return res.status(500).json({ error: 'Aucune clé de traduction configurée' });
   const text = String(req.body?.text || '').slice(0, 2000);
   const from = String(req.body?.from || '').slice(0, 12);
   const to = Array.isArray(req.body?.to) ? req.body.to.slice(0, 12).map(s => String(s).slice(0, 12)) : [];
@@ -96,20 +102,28 @@ app.post('/api/translate', async (req, res) => {
     const r = await fetch(`https://api.cognitive.microsofttranslator.com/translate?${qs}`, {
       method: 'POST',
       headers: {
-        'Ocp-Apim-Subscription-Key': AZURE_KEY,
-        'Ocp-Apim-Subscription-Region': ACTIVE_REGION,
+        'Ocp-Apim-Subscription-Key': TKEY,
+        'Ocp-Apim-Subscription-Region': TREGION,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify([{ Text: text }]),
       signal: AbortSignal.timeout(8000),
     });
-    if (!r.ok) return res.json({ translations: {} });
+    if (!r.ok) {
+      // Diagnostic explicite plutôt qu'un échec muet : le message d'Azure indique
+      // s'il s'agit d'une clé refusée, d'une région erronée ou d'un quota dépassé.
+      let detail = '';
+      try { detail = (await r.text()).slice(0, 300); } catch (_) {}
+      console.warn('[translate] échec Azure', r.status, detail);
+      return res.json({ translations: {}, error: 'azure_' + r.status, detail });
+    }
     const j = await r.json();
     const out = {};
     (j?.[0]?.translations || []).forEach(t => { if (t.to) out[t.to] = t.text; });
     return res.json({ translations: out });
   } catch (e) {
-    return res.json({ translations: {} });
+    console.warn('[translate] exception', e && e.message);
+    return res.json({ translations: {}, error: 'exception', detail: String(e && e.message || '') });
   }
 });
 
