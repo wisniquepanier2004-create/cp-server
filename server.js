@@ -68,7 +68,10 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
  * Version du serveur — permet de vérifier d'un coup d'œil qu'un déploiement
  * a bien pris, et quelles origines sont acceptées.
  */
-const BUILD = '2026-08-03b-translate-diag';
+const BUILD = '2026-08-04-translate-auto-region';
+// Mode d'authentification Translator retenu après le premier succès :
+// null = inconnu, 'global' = sans en-tête de région, sinon nom de région.
+let TRANSLATOR_MODE = null;
 app.get('/api/version', (req, res) => res.json({
   build: BUILD,
   originsAllowed: ALLOWED_ORIGINS,
@@ -95,36 +98,66 @@ app.post('/api/translate', async (req, res) => {
   const to = Array.isArray(req.body?.to) ? req.body.to.slice(0, 12).map(s => String(s).slice(0, 12)) : [];
   if (!text || !to.length) return res.json({ translations: {} });
 
-  try {
-    const qs = new URLSearchParams({ 'api-version': '3.0' });
-    if (from) qs.append('from', from);
-    to.forEach(t => qs.append('to', t));
-    const r = await fetch(`https://api.cognitive.microsofttranslator.com/translate?${qs}`, {
-      method: 'POST',
-      headers: {
-        'Ocp-Apim-Subscription-Key': TKEY,
-        'Ocp-Apim-Subscription-Region': TREGION,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify([{ Text: text }]),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!r.ok) {
-      // Diagnostic explicite plutôt qu'un échec muet : le message d'Azure indique
-      // s'il s'agit d'une clé refusée, d'une région erronée ou d'un quota dépassé.
-      let detail = '';
-      try { detail = (await r.text()).slice(0, 300); } catch (_) {}
-      console.warn('[translate] échec Azure', r.status, detail);
-      return res.json({ translations: {}, error: 'azure_' + r.status, detail });
-    }
-    const j = await r.json();
-    const out = {};
-    (j?.[0]?.translations || []).forEach(t => { if (t.to) out[t.to] = t.text; });
-    return res.json({ translations: out });
-  } catch (e) {
-    console.warn('[translate] exception', e && e.message);
-    return res.json({ translations: {}, error: 'exception', detail: String(e && e.message || '') });
+  const qs = new URLSearchParams({ 'api-version': '3.0' });
+  if (from) qs.append('from', from);
+  to.forEach(t => qs.append('to', t));
+  const url = `https://api.cognitive.microsofttranslator.com/translate?${qs}`;
+
+  // Une ressource Translator peut être créée « Global » ou dans une région
+  // précise. Dans le premier cas l'en-tête de région fait échouer la requête
+  // (401), dans le second son absence la fait échouer aussi. On essaie donc
+  // les deux, en mémorisant celui qui fonctionne pour les appels suivants.
+  const variants = [];
+  if (TRANSLATOR_MODE === 'global') variants.push(null);
+  else if (TRANSLATOR_MODE) variants.push(TRANSLATOR_MODE);
+  else {
+    if (process.env.AZURE_TRANSLATOR_REGION) variants.push(process.env.AZURE_TRANSLATOR_REGION);
+    variants.push(null);      // Global — cas le plus fréquent
+    variants.push(TREGION);   // même région que la ressource Speech
   }
+
+  let last = { status: 0, detail: '' };
+  for (const region of variants) {
+    try {
+      const headers = {
+        'Ocp-Apim-Subscription-Key': TKEY,
+        'Content-Type': 'application/json',
+      };
+      if (region) headers['Ocp-Apim-Subscription-Region'] = region;
+
+      const r = await fetch(url, {
+        method: 'POST', headers,
+        body: JSON.stringify([{ Text: text }]),
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (r.ok) {
+        if (TRANSLATOR_MODE === null) {
+          TRANSLATOR_MODE = region || 'global';
+          console.log('[translate] mode retenu :', TRANSLATOR_MODE);
+        }
+        const j = await r.json();
+        const out = {};
+        (j?.[0]?.translations || []).forEach(t => { if (t.to) out[t.to] = t.text; });
+        return res.json({ translations: out });
+      }
+
+      last.status = r.status;
+      try { last.detail = (await r.text()).slice(0, 240); } catch (_) {}
+      console.warn('[translate] échec', r.status, 'region=' + (region || 'global'));
+    } catch (e) {
+      last.status = 0;
+      last.detail = String(e && e.message || '');
+      console.warn('[translate] exception', last.detail);
+    }
+  }
+
+  return res.json({
+    translations: {},
+    error: 'azure_' + last.status,
+    detail: last.detail,
+    tried: variants.map(v => v || 'global'),
+  });
 });
 
 /**
