@@ -1,6 +1,6 @@
 /**
  * CP — Serveur d'appels à distance
- * - Salles WebSocket (code à 4 caractères) qui relaient les énoncés traduits
+ * - Salles WebSocket (code à 6 caractères) qui relaient les énoncés traduits
  * - Endpoint /api/token : jeton Azure Speech éphémère (la clé reste ici)
  *
  * Démarrage :  npm install && npm start
