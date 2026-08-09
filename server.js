@@ -62,6 +62,50 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '32kb' }));
 
+/* ── Limite de debit ──────────────────────────────────────────────────
+   Rien ne limitait l usage : /api/token distribuait un jeton Azure a qui
+   le demandait, et /api/translate traduisait sans compter. La liste
+   blanche d origines existe et fonctionne, mais elle ne protege que les
+   navigateurs : un script en ligne de commande n envoie pas d en-tete
+   d origine et n est donc pas concerne. Tant que l adresse du serveur
+   restait discrete le risque etait faible ; le jour du lancement elle est
+   dans le code source de la page, visible par tous.
+
+   Compteur en memoire, par adresse, fenetre glissante. Les valeurs sont
+   larges pour un usage reel et etroites pour un abus automatise. */
+const seaux = new Map();
+function limiteDebit(nom, maximum, fenetreMs) {
+  return function (req, res, suite) {
+    const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+             || (req.socket && req.socket.remoteAddress) || 'inconnue';
+    const cle = nom + '|' + ip;
+    const maintenant = Date.now();
+    let s = seaux.get(cle);
+    if (!s || maintenant > s.fin) { s = { n: 0, fin: maintenant + fenetreMs }; seaux.set(cle, s); }
+    s.n++;
+    if (s.n > maximum) {
+      const attente = Math.ceil((s.fin - maintenant) / 1000);
+      res.set('Retry-After', String(attente));
+      return res.status(429).json({ error: 'trop de requetes', retryAfter: attente });
+    }
+    suite();
+  };
+}
+try {
+  const menage = setInterval(function () {
+    const maintenant = Date.now();
+    for (const [cle, s] of seaux) if (maintenant > s.fin) seaux.delete(cle);
+  }, 60000);
+  if (menage.unref) menage.unref();
+} catch (e) {}
+
+/* Trente jetons par heure suffisent tres largement a un usage reel :
+   un jeton Azure vaut dix minutes et l application le reutilise. */
+app.use('/api/token', limiteDebit('jeton', 30, 60 * 60 * 1000));
+app.use('/api/translate', limiteDebit('traduction', 600, 60 * 60 * 1000));
+app.use('/api/diagnose', limiteDebit('diagnostic', 20, 60 * 60 * 1000));
+
+
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 /**
@@ -238,10 +282,15 @@ const ROOM_TTL_MS = 30 * 60 * 1000; // salle vide supprimée après 30 min
 // participant est minime. Ajustable sans redéploiement via MAX_PARTICIPANTS.
 const MAX_PARTICIPANTS = Number(process.env.MAX_PARTICIPANTS) || 50;
 
+/* Six caracteres, pas quatre. Avec quatre, sans mot de passe, sans salle
+   d attente et sans verrouillage, on tombe sur une reunion en cours en
+   quelques minutes d essais au hasard. Six, c est 1 700 fois plus dur.
+   Le champ de saisie du client accepte desormais six caracteres ; les
+   anciens codes a quatre restent valides tant que leur salle vit. */
 function newRoomCode() {
   let code;
   do {
-    code = crypto.randomBytes(3).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase();
+    code = crypto.randomBytes(6).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase();
   } while (!code || rooms.has(code));
   return code;
 }
