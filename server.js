@@ -1,6 +1,6 @@
 /**
  * CP — Serveur d'appels à distance
- * - Salles WebSocket (code à 6 caractères) qui relaient les énoncés traduits
+ * - Salles WebSocket (code à 4 caractères) qui relaient les énoncés traduits
  * - Endpoint /api/token : jeton Azure Speech éphémère (la clé reste ici)
  *
  * Démarrage :  npm install && npm start
@@ -282,15 +282,26 @@ const ROOM_TTL_MS = 30 * 60 * 1000; // salle vide supprimée après 30 min
 // participant est minime. Ajustable sans redéploiement via MAX_PARTICIPANTS.
 const MAX_PARTICIPANTS = Number(process.env.MAX_PARTICIPANTS) || 50;
 
-/* Six caracteres, pas quatre. Avec quatre, sans mot de passe, sans salle
-   d attente et sans verrouillage, on tombe sur une reunion en cours en
-   quelques minutes d essais au hasard. Six, c est 1 700 fois plus dur.
-   Le champ de saisie du client accepte desormais six caracteres ; les
-   anciens codes a quatre restent valides tant que leur salle vit. */
+/* REMIS A QUATRE CARACTERES, TEMPORAIREMENT.
+
+   Six caracteres est la bonne valeur : avec quatre, sans mot de passe et
+   sans salle d attente, on tombe sur une reunion en cours en quelques
+   minutes d essais au hasard. Mais le client n est pas encore pret :
+
+     - index.html lit les liens d invitation avec /conf=([A-Za-z0-9]{4})/,
+       donc un code a six caracteres casse toutes les invitations par lien ;
+     - le champ de saisie porte maxlength="4" dans le fichier source. Il est
+       corrige au chargement par cp-meet.js, mais un telephone qui garde une
+       ancienne copie en cache reste bloque a quatre et ne peut plus entrer
+       dans aucune salle.
+
+   J ai deploye la moitie serveur avant la moitie client. C est une erreur
+   de sequence, pas de conception. On repassera a six quand les deux moitiees
+   partiront ensemble. */
 function newRoomCode() {
   let code;
   do {
-    code = crypto.randomBytes(6).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase();
+    code = crypto.randomBytes(3).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase();
   } while (!code || rooms.has(code));
   return code;
 }
