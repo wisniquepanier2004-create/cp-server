@@ -99,9 +99,13 @@ try {
   if (menage.unref) menage.unref();
 } catch (e) {}
 
-/* Trente jetons par heure suffisent tres largement a un usage reel :
-   un jeton Azure vaut dix minutes et l application le reutilise. */
-app.use('/api/token', limiteDebit('jeton', 30, 60 * 60 * 1000));
+/* Le client demande un jeton PAR PHRASE synthetisee (pas de cache cote
+   client pour l instant). Une conference active epuisait la limite de 30
+   en quelques minutes : la voix s arretait, le texte continuait. 600 par
+   heure couvre une vraie seance. Le correctif durable est la mise en cache
+   du jeton cote client (~8 min) ; le vrai garde-fou de cout reste l alerte
+   de budget Azure, pas cette limite. */
+app.use('/api/token', limiteDebit('jeton', 600, 60 * 60 * 1000));
 app.use('/api/translate', limiteDebit('traduction', 600, 60 * 60 * 1000));
 app.use('/api/diagnose', limiteDebit('diagnostic', 20, 60 * 60 * 1000));
 
